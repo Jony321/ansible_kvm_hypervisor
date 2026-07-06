@@ -54,7 +54,7 @@
     update_cache: true
 
 - name: Включить автозапуск и активировать службы KSM
-  ansible.builtin.systemctl:
+  ansible.builtin.systemd:
     name: "{{ item }}"
     enabled: true
     state: started
@@ -63,10 +63,13 @@
     - ksmtuned
 
 - name: Принудительно включить работу KSM на уровне ядра
-  ansible.builtin.sysfs:
-    name: kernel/mm/ksm/run
-    value: "1"
-    state: present
+  ansible.builtin.shell: |
+    if [ -f /sys/kernel/mm/ksm/run ] && [ "$(cat /sys/kernel/mm/ksm/run)" != "1" ]; then
+      echo 1 > /sys/kernel/mm/ksm/run
+      echo "changed"
+    fi
+  register: ksm_run_status
+  changed_when: "'changed' in ksm_run_status.stdout"
   failed_when: false
 
 # ==========================================
@@ -102,7 +105,7 @@
   notify: Restart libvirtd
 
 - name: Запустить и включить автозагрузку службы libvirtd
-  ansible.builtin.systemctl:
+  ansible.builtin.systemd:
     name: libvirtd
     enabled: true
     state: started
@@ -118,13 +121,13 @@
 
 - name: Активировать пул хранения default
   ansible.builtin.shell: |
-    virsh pool-info default | grep -q "Active:.*yes" || virsh pool-start default
+    virsh pool-list | grep -qw "default" || virsh pool-start default
   register: pool_st
   changed_when: "'started' in pool_st.stdout"
 
 - name: Настроить автозапуск пула хранения default
   ansible.builtin.shell: |
-    virsh pool-info default | grep -q "Autostart:.*yes" || virsh pool-autostart default
+    virsh pool-list --autostart | grep -qw "default" || virsh pool-autostart default
   register: pool_auto
   changed_when: "'autostarted' in pool_auto.stdout"
 
