@@ -1,0 +1,7 @@
+---
+kvm_base_image_url: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+kvm_base_image_dest: "/var/lib/libvirt/images/ubuntu-24.04-base.qcow2"
+kvm_lvm_vg: "ubuntu-vg"
+kvm_lvm_lv: "lv_images"
+kvm_lvm_size: "1.5T"
+kvm_images_dir: "/var/lib/libvirt/images"

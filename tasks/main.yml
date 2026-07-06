@@ -1,0 +1,153 @@
+---
+# ==========================================
+# 1. Пользователи
+# ==========================================
+- name: Удалить пользователя jony и его домашнюю директорию
+  ansible.builtin.user:
+    name: jony
+    state: absent
+    remove: true
+
+# ==========================================
+# 2. Подготовка дисковой подсистемы (LVM & Mount)
+# ==========================================
+- name: Создать логический том lv_images в группе LVM
+  community.general.lvol:
+    vg: "{{ kvm_lvm_vg }}"
+    lv: "{{ kvm_lvm_lv }}"
+    size: "{{ kvm_lvm_size }}"
+    state: present
+
+- name: Форматировать созданный LVM-том в XFS
+  community.general.filesystem:
+    fstype: xfs
+    dev: "/dev/{{ kvm_lvm_vg }}/{{ kvm_lvm_lv }}"
+
+- name: Убедиться, что целевой каталог для образов существует
+  ansible.builtin.file:
+    path: "{{ kvm_images_dir }}"
+    state: directory
+    mode: '0711'
+
+- name: Смонтировать LVM-том и прописать его автозагрузку в fstab
+  ansible.posix.mount:
+    path: "{{ kvm_images_dir }}"
+    src: "/dev/{{ kvm_lvm_vg }}/{{ kvm_lvm_lv }}"
+    fstype: xfs
+    opts: defaults
+    state: mounted
+
+# ==========================================
+# 3. Установка пакетов и активация KSM
+# ==========================================
+- name: Установить пакеты KVM, libvirt и KSM-демоны
+  ansible.builtin.apt:
+    name:
+      - qemu-kvm
+      - libvirt-daemon-system
+      - libvirt-clients
+      - bridge-utils
+      - cpu-checker
+      - genisoimage
+      - ksmtuned
+    state: present
+    update_cache: true
+
+- name: Включить автозапуск и активировать службы KSM
+  ansible.builtin.systemctl:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - ksm
+    - ksmtuned
+
+- name: Принудительно включить работу KSM на уровне ядра
+  ansible.builtin.sysfs:
+    name: kernel/mm/ksm/run
+    value: "1"
+    state: present
+  failed_when: false
+
+# ==========================================
+# 4. Скачивание базового облачного образа ОС
+# ==========================================
+- name: Проверить, существует ли базовый образ на диске
+  ansible.builtin.stat:
+    path: "{{ kvm_base_image_dest }}"
+  register: base_image_file
+
+- name: Скачать базовый образ Ubuntu 24.04 Cloud-Image
+  ansible.builtin.get_url:
+    url: "{{ kvm_base_image_url }}"
+    dest: "{{ kvm_base_image_dest }}"
+    mode: '0644'
+  when: not base_image_file.stat.exists
+
+# ==========================================
+# 5. Настройка прав и конфигурации QEMU
+# ==========================================
+- name: Добавить пользователя libvirt-qemu в группу disk для прямого доступа к LVM
+  ansible.builtin.user:
+    name: libvirt-qemu
+    groups: disk
+    append: true
+
+- name: Отключить профили безопасности AppArmor в qemu.conf
+  ansible.builtin.lineinfile:
+    path: /etc/libvirt/qemu.conf
+    regexp: '^\s*#?\s*security_driver\s*=\s*.*'
+    line: 'security_driver = "none"'
+    state: present
+  notify: Restart libvirtd
+
+- name: Запустить и включить автозагрузку службы libvirtd
+  ansible.builtin.systemctl:
+    name: libvirtd
+    enabled: true
+    state: started
+
+# ==========================================
+# 6. Инициализация пула хранения default
+# ==========================================
+- name: Зарегистрировать пул хранения default в KVM
+  ansible.builtin.shell: |
+    virsh pool-info default || virsh pool-define-as --name default --type dir --target {{ kvm_images_dir }}
+  register: pool_def
+  changed_when: "'defined' in pool_def.stdout"
+
+- name: Активировать пул хранения default
+  ansible.builtin.shell: |
+    virsh pool-info default | grep -q "Active:.*yes" || virsh pool-start default
+  register: pool_st
+  changed_when: "'started' in pool_st.stdout"
+
+- name: Настроить автозапуск пула хранения default
+  ansible.builtin.shell: |
+    virsh pool-info default | grep -q "Autostart:.*yes" || virsh pool-autostart default
+  register: pool_auto
+  changed_when: "'autostarted' in pool_auto.stdout"
+
+# ==========================================
+# 7. Очистка стандартной NAT-сети (virbr0)
+# ==========================================
+- name: Остановить неиспользуемую дефолтную NAT-сеть KVM
+  ansible.builtin.shell: |
+    virsh net-destroy default
+  register: net_dest
+  failed_when: false
+  changed_when: "'destroyed' in net_dest.stdout"
+
+- name: Отключить автозапуск дефолтной NAT-сети KVM
+  ansible.builtin.shell: |
+    virsh net-autostart default --disable
+  register: net_auto
+  failed_when: false
+  changed_when: "'disabled' in net_auto.stdout"
+
+- name: Удалить конфигурацию дефолтной сети из KVM
+  ansible.builtin.shell: |
+    virsh net-undefine default
+  register: net_undef
+  failed_when: false
+  changed_when: "'undefined' in net_undef.stdout"
