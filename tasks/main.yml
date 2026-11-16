@@ -43,7 +43,7 @@
 - name: Установить пакеты KVM, libvirt и KSM-демоны
   ansible.builtin.apt:
     name:
-      - qemu-kvm
+      - "{{ kvm_qemu_package }}"
       - libvirt-daemon-system
       - libvirt-clients
       - bridge-utils
@@ -85,6 +85,11 @@
     url: "{{ kvm_base_image_url }}"
     dest: "{{ kvm_base_image_dest }}"
     mode: '0644'
+    timeout: 60
+  register: kvm_image_download
+  retries: 3
+  delay: 5
+  until: kvm_image_download is succeeded
   when: not base_image_file.stat.exists
 
 # ==========================================
